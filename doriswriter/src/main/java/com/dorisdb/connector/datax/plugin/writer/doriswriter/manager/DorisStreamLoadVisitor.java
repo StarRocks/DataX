@@ -1,7 +1,6 @@
 package com.dorisdb.connector.datax.plugin.writer.doriswriter.manager;
 
 import java.io.IOException;
-import java.io.Serializable;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -27,9 +26,7 @@ import java.util.List;
 import java.util.Map;
 
  
-public class DorisStreamLoadVisitor implements Serializable {
-
-    private static final long serialVersionUID = 1L;
+public class DorisStreamLoadVisitor {
 
     private static final Logger LOG = LoggerFactory.getLogger(DorisStreamLoadVisitor.class);
 
@@ -57,9 +54,10 @@ public class DorisStreamLoadVisitor implements Serializable {
         if (null == loadResult || !loadResult.containsKey(keyStatus)) {
             throw new IOException("Unable to flush data to doris: unknown result status.");
         }
+        LOG.debug(new StringBuilder("StreamLoad response:\n").append(JSON.toJSONString(loadResult)).toString());
         if (loadResult.get(keyStatus).equals("Fail")) {
             throw new IOException(
-                new StringBuilder("Failed to flush data to doris.").append(loadResult.get("Message").toString()).toString()
+                new StringBuilder("Failed to flush data to doris.\n").append(JSON.toJSONString(loadResult)).toString()
             );
         }
     }
@@ -93,7 +91,13 @@ public class DorisStreamLoadVisitor implements Serializable {
     }
 
     private byte[] joinRows(List<String> rows) {
-        return String.join("\n", rows).getBytes(StandardCharsets.UTF_8);
+        if (DorisWriterOptions.StreamLoadFormat.CSV.equals(writerOptions.getStreamLoadFormat())) {
+            return String.join("\n", rows).getBytes(StandardCharsets.UTF_8);
+        }
+        if (DorisWriterOptions.StreamLoadFormat.JSON.equals(writerOptions.getStreamLoadFormat())) {
+            return new StringBuilder("[").append(String.join(",", rows)).append("]").toString().getBytes(StandardCharsets.UTF_8);
+        }
+        throw new RuntimeException("Failed to join rows data, unsupported `format` from stream load properties:");
     }
 
     @SuppressWarnings("unchecked")
@@ -111,6 +115,11 @@ public class DorisStreamLoadVisitor implements Serializable {
             List<String> cols = writerOptions.getColumns();
             if (null != cols && !cols.isEmpty()) {
                 httpPut.setHeader("columns", String.join(",", cols));
+            }
+            if (null != writerOptions.getLoadProps()) {
+                for (Map.Entry<String, Object> entry : writerOptions.getLoadProps().entrySet()) {
+                    httpPut.setHeader(entry.getKey(), String.valueOf(entry.getValue()));
+                }
             }
             httpPut.setHeader("Expect", "100-continue");
             httpPut.setHeader("label", label);
