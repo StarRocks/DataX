@@ -3,10 +3,12 @@ package com.dorisdb.connector.datax.plugin.writer.doriswriter.manager;
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 
 import com.alibaba.fastjson.JSON;
 import com.dorisdb.connector.datax.plugin.writer.doriswriter.DorisWriterOptions;
+import com.dorisdb.connector.datax.plugin.writer.doriswriter.row.DorisDelimiterParser;
 
 import org.apache.commons.codec.binary.Base64;
 import org.apache.http.HttpEntity;
@@ -50,7 +52,7 @@ public class DorisStreamLoadVisitor {
             .append("/_stream_load")
             .toString();
         LOG.debug(String.format("Start to join batch data: rows[%d] bytes[%d] label[%s].", flushData.getRows().size(), flushData.getBytes(), flushData.getLabel()));
-        Map<String, Object> loadResult = doHttpPut(loadUrl, flushData.getLabel(), joinRows(flushData.getRows()));
+        Map<String, Object> loadResult = doHttpPut(loadUrl, flushData.getLabel(), joinRows(flushData.getRows(), flushData.getBytes().intValue()));
         final String keyStatus = "Status";
         if (null == loadResult || !loadResult.containsKey(keyStatus)) {
             throw new IOException("Unable to flush data to doris: unknown result status.");
@@ -91,12 +93,32 @@ public class DorisStreamLoadVisitor {
         }
     }
 
-    private byte[] joinRows(List<String> rows) {
+    private byte[] joinRows(List<String> rows, int totalBytes) {
         if (DorisWriterOptions.StreamLoadFormat.CSV.equals(writerOptions.getStreamLoadFormat())) {
-            return String.join("\n", rows).getBytes(StandardCharsets.UTF_8);
+            Map<String, Object> props = writerOptions.getLoadProps();
+            byte[] lineDelimiter = DorisDelimiterParser.parse(String.valueOf(props.get("row_delimiter")), "\n").getBytes(StandardCharsets.UTF_8);
+            ByteBuffer bos = ByteBuffer.allocate(totalBytes + rows.size() * lineDelimiter.length);
+            for (String row : rows) {
+                bos.put(row.getBytes(StandardCharsets.UTF_8));
+                bos.put(lineDelimiter);
+            }
+            return bos.array();
         }
+       
         if (DorisWriterOptions.StreamLoadFormat.JSON.equals(writerOptions.getStreamLoadFormat())) {
-            return new StringBuilder("[").append(String.join(",", rows)).append("]").toString().getBytes(StandardCharsets.UTF_8);
+            ByteBuffer bos = ByteBuffer.allocate(totalBytes + (rows.isEmpty() ? 2 : rows.size() + 1));
+            bos.put("[".getBytes(StandardCharsets.UTF_8));
+            byte[] jsonDelimiter = ",".getBytes(StandardCharsets.UTF_8);
+            boolean isFirstElement = true;
+            for (String row : rows) {
+                if (!isFirstElement) {
+                    bos.put(jsonDelimiter);
+                }
+                bos.put(row.getBytes(StandardCharsets.UTF_8));
+                isFirstElement = false;
+            }
+            bos.put("]".getBytes(StandardCharsets.UTF_8));
+            return bos.array();
         }
         throw new RuntimeException("Failed to join rows data, unsupported `format` from stream load properties:");
     }
